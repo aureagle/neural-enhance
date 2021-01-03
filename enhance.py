@@ -43,14 +43,25 @@ import numpy as np
 import scipy.ndimage, scipy.misc, PIL.Image
 import imageio
 
+
+def str2bool(v):
+    if isinstance(v, bool):
+       return v
+    if v.lower() in ('yes', 'true', 't', 'y', '1'):
+        return True
+    elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+        return False
+    else:
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
 # Configure all options first so we can later custom-load other libraries (Theano) based on device specified by user.
 parser = argparse.ArgumentParser(description='Generate a new image by applying style onto a content image.',
                                  formatter_class=argparse.ArgumentDefaultsHelpFormatter)
 add_arg = parser.add_argument
 add_arg('files',                nargs='*', default=[])
 add_arg('--zoom',               default=2, type=np.int32,                help='Resolution increase factor for inference.')
-add_arg('--rendering-tile',     default=80, type=np.int32,               help='Size of tiles used for rendering images.')
-add_arg('--rendering-overlap',  default=24, type=np.int32,               help='Number of pixels padding around each tile.')
+add_arg('--rendering-tile',     default=112, type=np.int32,               help='Size of tiles used for rendering images.') #previously 80
+add_arg('--rendering-overlap',  default=16, type=np.int32,               help='Number of pixels padding around each tile.') #previously 24
 add_arg('--rendering-histogram',default=False, action='store_true', help='Match color histogram of output to input.')
 add_arg('--type',               default='photo', type=str,          help='Name of the neural network to load/save.')
 add_arg('--model',              default='default', type=str,        help='Specific trained version of the model.')
@@ -83,6 +94,8 @@ add_arg('--generator-start',    default=0, type=np.int32,                help='E
 add_arg('--discriminator-start',default=1, type=np.int32,                help='Epoch count to update the discriminator.')
 add_arg('--adversarial-start',  default=2, type=np.int32,                help='Epoch for generator to use discriminator.')
 add_arg('--device',             default='cpu', type=str,            help='Name of the CPU/GPU to use, for Theano.')
+add_arg('--repeat-epoch',       default=False, type=str2bool,            help='Repeat an epoch if losses are high')
+add_arg('--epoch-num-repeat',   default=3, type=np.int32,           help='Times to repeat an epoch if losses are high, 0=repeat forever' )
 args = parser.parse_args()
 
 
@@ -526,30 +539,55 @@ class NeuralEnhancer(object):
 
         learning_rate = self.decay_learning_rate()
         try:  
-            average, start = None, time.time()
+            average, prev_average, start = None, None, time.time()
             for epoch in range(args.epochs):
                 total, stats = None, None
+                epoch_size = args.epoch_size
                 l_r = next(learning_rate)
                 if epoch >= args.generator_start: self.model.gen_lr.set_value(l_r)
                 if epoch >= args.discriminator_start: self.model.disc_lr.set_value(l_r)
 
                 for _ in range(args.epoch_size):
                     self.thread.copy(images, seeds)
-                    output = self.model.fit(images, seeds)
-                    losses = np.array(output[:3], dtype=np.float32)
-                    stats = (stats + output[3]) if stats is not None else output[3]
-                    total = total + losses if total is not None else losses
-                    l = np.sum(losses)
-                    assert not np.isnan(losses).any()
-                    assert not np.isinf(losses).any()
-                    average = l if average is None else average * 0.95 + 0.05 * l
-                    print('↑ ' if l > average else '↓ ', end='', flush=False)
-                    print( "losses: " , losses , flush=True)
+                    again, num_again = False, 0
+                    while( True ):
+                        output = self.model.fit(images, seeds) #1st epoch
+                        losses = np.array(output[:3], dtype=np.float32)
+                        stats = (stats + output[3]) if stats is not None else output[3]
+                        total = total + losses if total is not None else losses
+                        l = np.sum(losses)
+                        assert not np.isnan(losses).any()
+                        assert not np.isinf(losses).any()
+                        if( not again ):
+                            prev_average = average
+                        else:
+                            average = prev_average
+                        average = l if average is None else average * 0.95 + 0.05 * l
+                        print('↑' if l > average else '↓', end='', flush=False)
+                        print('- ' if again else ' ', end = '', flush=False)
+                        print( "losses: " , losses, "[{}]".format(_) , flush=True)
+                        if( not args.repeat_epoch or args.adversarial_start > epoch ):
+                            break
+                        else:
+                            if( l > average ):
+                                again = True
+                                num_again += 1
+                                epoch_size += 1
+                                if( args.epoch_num_repeat == 0 or num_again < args.epoch_num_repeat ):
+                                    continue
+                                else:
+                                    break
+                            else:
+                                again = False
+                                num_again = 0
+                                break
+                        
+                        
 
                 scald, repro = self.model.predict(seeds)
                 self.show_progress(images, scald, repro)
-                total /= args.epoch_size
-                stats /= args.epoch_size
+                total /= epoch_size
+                stats /= epoch_size
                 totals, labels = [sum(total)] + list(total), ['total', 'prcpt', 'smthn', 'advrs']
                 gen_info = ['{}{}{}={:4.2e}'.format(ansi.WHITE_B, k, ansi.ENDC, v) for k, v in zip(labels, totals)]
                 print('\rEpoch #{} at {:4.1f}s, lr={:4.2e}{}'.format(epoch+1, time.time()-start, l_r, ' '*(args.epoch_size-30)))
@@ -594,11 +632,18 @@ class NeuralEnhancer(object):
         output = np.zeros((original.shape[0] * z, original.shape[1] * z, 3), dtype=np.float32)
 
         # Iterate through the tile coordinates and pass them through the network.
+        prev_percent_complete = None
         for y, x in itertools.product(range(0, original.shape[0], s), range(0, original.shape[1], s)):
             img = np.transpose( image[y:y+p*2+s,x:x+p*2+s,:] / 255.0 - 0.5, (2, 0, 1)) [np.newaxis].astype(np.float32)
             *_, repro = self.model.predict(img)
             output[y*z:(y+s)*z,x*z:(x+s)*z,:] = np.transpose(repro[0] + 0.5, (1, 2, 0))[p*z:-p*z,p*z:-p*z,:]
-            print('.', end='', flush=True)
+            percent_complete = ( y / original.shape[0] ) * 100
+            if( prev_percent_complete != percent_complete ):
+                prev_percent_complete = percent_complete
+                print("\n{0:.0f} % complete".format(percent_complete), end='' )
+                print('.', end='', flush=True)
+            else:
+                print('.', end='', flush=True)
         output = output.clip(0.0, 1.0) * 255.0
 
         # Match color histograms if the user specified this option.
@@ -617,7 +662,7 @@ if __name__ == "__main__":
     else:
         enhancer = NeuralEnhancer(loader=False)
         for filename in args.files:
-            print(filename, end=' ')
+            print(filename, end='\n')
             img = imageio.imread(filename, pilmode='RGB')
             out = enhancer.process(img)
             out.save(os.path.splitext(filename)[0]+'_ne%ix.png' % args.zoom)
