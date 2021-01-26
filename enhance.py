@@ -28,6 +28,7 @@ import bz2
 import glob
 import math
 import time
+import zlib
 import pickle
 import random
 import argparse
@@ -96,6 +97,8 @@ add_arg('--adversarial-start',  default=2, type=np.int32,                help='E
 add_arg('--device',             default='cpu', type=str,            help='Name of the CPU/GPU to use, for Theano.')
 add_arg('--repeat-epoch',       default=False, type=str2bool,            help='Repeat an epoch if losses are high')
 add_arg('--epoch-num-repeat',   default=3, type=np.int32,           help='Times to repeat an epoch if losses are high, 0=repeat forever' )
+add_arg('--min-contentfulness',     default=0, type=np.int32,           help='min contentfulness of the tiles to be trained on' )
+add_arg('--max-contentfulness', default=0, type=np.int32,               help='max contentfulness of the tiles to be trained on' )
 args = parser.parse_args()
 
 
@@ -219,7 +222,9 @@ class DataLoader(threading.Thread):
         # the consecutive tiles but the tiling is done from random points so number of fractions doesn't matter
         # so this 'for' statement is no longer required
         # for _ in range(seed.shape[0] * seed.shape[1] // ( num_fractions * self.seed_shape ** 2)):
-        for _ in range( num_fractions ):
+        range_num_fractions = num_fractions;
+        #for _ in range( num_fractions ):
+        while range_num_fractions > 0:
             h = random.randint(0, seed.shape[0] - self.seed_shape )
             # h = math.floor( random.randint( 0, math.floor( seed.shape[0] / self.seed_shape ) - 1 ) * self.seed_shape )
             w = random.randint(0, seed.shape[1] - self.seed_shape )
@@ -228,6 +233,10 @@ class DataLoader(threading.Thread):
             h, w = h * args.zoom, w * args.zoom
             orig_chunk = orig[h:h+self.orig_shape, w:w+self.orig_shape]
 
+            if self.contentful( orig_chunk ) == False:
+                continue
+
+            range_num_fractions -= 1;
             while len(self.available) == 0:
                 self.data_copied.wait()
                 self.data_copied.clear()
@@ -249,6 +258,19 @@ class DataLoader(threading.Thread):
             seeds_out[i] = self.seed_buffer[j]
             self.available.add(j)
         self.data_copied.set()
+
+    def contentful(self, buffer ):
+        if args.max_contentfulness != 0 and args.min_contentfulness > args.max_contentfulness:
+            return True;
+        one_liner = np.squeeze( buffer ).reshape( -1 )
+        one_liner_compressed = zlib.compress( one_liner )
+        contentfulness = len( one_liner_compressed ) / len( one_liner ) * 100
+        if contentfulness < args.min_contentfulness:
+            return False
+        if args.max_contentfulness > 0:
+            if contentfulness > args.max_contentfulness:
+                return False
+        return True
 
 
 #======================================================================================================================
@@ -665,7 +687,7 @@ if __name__ == "__main__":
             print(filename, end='\n')
             img = imageio.imread(filename, pilmode='RGB')
             out = enhancer.process(img)
-            out.save(os.path.splitext(filename)[0]+'_ne%ix.png' % args.zoom)
+            out.save(os.path.splitext(filename)[0]+'_b%i.png' % args.zoom)
             print(flush=True)
         print(ansi.ENDC)
 
