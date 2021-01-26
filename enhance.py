@@ -222,9 +222,7 @@ class DataLoader(threading.Thread):
         # the consecutive tiles but the tiling is done from random points so number of fractions doesn't matter
         # so this 'for' statement is no longer required
         # for _ in range(seed.shape[0] * seed.shape[1] // ( num_fractions * self.seed_shape ** 2)):
-        range_num_fractions = num_fractions;
-        #for _ in range( num_fractions ):
-        while range_num_fractions > 0:
+        for _ in range( num_fractions ):
             h = random.randint(0, seed.shape[0] - self.seed_shape )
             # h = math.floor( random.randint( 0, math.floor( seed.shape[0] / self.seed_shape ) - 1 ) * self.seed_shape )
             w = random.randint(0, seed.shape[1] - self.seed_shape )
@@ -236,7 +234,6 @@ class DataLoader(threading.Thread):
             if self.contentful( orig_chunk ) == False:
                 continue
 
-            range_num_fractions -= 1;
             while len(self.available) == 0:
                 self.data_copied.wait()
                 self.data_copied.clear()
