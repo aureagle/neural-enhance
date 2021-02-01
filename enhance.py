@@ -71,6 +71,7 @@ add_arg('--train-scales',       default=0, type=np.int32,                help='R
 add_arg('--train-blur',         default=None, type=np.int32,             help='Sigma value for gaussian blur preprocess.')
 add_arg('--train-noise',        default=None, type=float,           help='Radius for preprocessing gaussian blur.')
 add_arg('--train-jpeg',         default=[], nargs='+', type=int,    help='JPEG compression level & range in preproc.')
+add_arg('--train-jpeg-iters',   default=1, type=np.int32,           help='number of times jpeg should be resaved to get that artifact level' )
 add_arg('--epochs',             default=10, type=np.int32,               help='Total number of iterations in training.')
 add_arg('--epoch-size',         default=72, type=np.int32,               help='Number of batches trained in an epoch.')
 add_arg('--save-every',         default=10, type=np.int32,               help='Save generator after every training epoch.')
@@ -204,10 +205,12 @@ class DataLoader(threading.Thread):
             seed = seed.filter(PIL.ImageFilter.GaussianBlur(radius=random.randint(0, args.train_blur*2 )))
         if args.zoom > 1:
             seed = seed.resize((orig.size[0]//args.zoom, orig.size[1]//args.zoom), resample=PIL.Image.LANCZOS)
+
         if len(args.train_jpeg) > 0:
             buffer, rng = io.BytesIO(), args.train_jpeg[-1] if len(args.train_jpeg) > 1 else 15
-            seed.save(buffer, format='jpeg', quality=args.train_jpeg[0]+random.randrange(-rng, +rng))
-            seed = PIL.Image.open(buffer)
+            for _ in range( args.train_jpeg_iters ):
+                seed.save(buffer, format='jpeg', quality=args.train_jpeg[0]+random.randrange(-rng, +rng))
+                seed = PIL.Image.open(buffer)
 
         orig = np.asarray( orig ).astype( np.float32 )
         seed = np.asarray( seed ).astype( np.float32 )
