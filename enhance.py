@@ -41,7 +41,7 @@ compile_time = start_time
 
 # Scientific & Imaging Libraries
 import numpy as np
-import scipy.ndimage, scipy.misc, PIL.Image
+import scipy.ndimage, scipy.misc, PIL.Image, PIL.ImageFilter
 import imageio
 
 
@@ -100,6 +100,8 @@ add_arg('--repeat-epoch',       default=False, type=str2bool,            help='R
 add_arg('--epoch-num-repeat',   default=3, type=np.int32,           help='Times to repeat an epoch if losses are high, 0=repeat forever' )
 add_arg('--min-contentfulness',     default=0, type=np.int32,           help='min contentfulness of the tiles to be trained on' )
 add_arg('--max-contentfulness', default=0, type=np.int32,               help='max contentfulness of the tiles to be trained on' )
+add_arg('--train-palette',      default=0, type=np.int32,            help='train with 256 color source image' )
+add_arg('--train-resolution',   default=0, type=np.int32,               help='train by downscaling all images to specific resolution' )
 args = parser.parse_args()
 
 
@@ -200,9 +202,17 @@ class DataLoader(threading.Thread):
             self.files.remove(f)
             return
 
+        if args.train_resolution > 0:
+            if orig.size[0] > args.train_resolution or orig.size[1] > args.train_resolution:
+                orig.thumbnail(( args.train_resolution, args.train_resolution ), PIL.Image.LANCZOS)
+
         seed = orig
         if args.train_blur is not None:
             seed = seed.filter(PIL.ImageFilter.GaussianBlur(radius=random.randint(0, args.train_blur*2 )))
+        if args.train_palette > 0:
+            # seed = seed.filter(PIL.ImagePalette.ImagePalette( mode='RGB', palette=Image.ADAPTIVE, size=8 ))
+            seed = seed.quantize( args.train_palette )
+            seed = seed.convert('RGB')
         if args.zoom > 1:
             seed = seed.resize((orig.size[0]//args.zoom, orig.size[1]//args.zoom), resample=PIL.Image.LANCZOS)
 
@@ -585,7 +595,7 @@ class NeuralEnhancer(object):
                         else:
                             average = prev_average
                         average = l if average is None else average * 0.95 + 0.05 * l
-                        print('↑' if l > average else '↓', end='', flush=False)
+                        print('[u]' if l > average else '[d]', end='', flush=False)
                         print('- ' if again else ' ', end = '', flush=False)
                         print( "losses: " , losses, "[{}]".format(_) , flush=True)
                         if( not args.repeat_epoch or args.adversarial_start > epoch ):
