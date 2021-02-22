@@ -19,6 +19,15 @@ Neural Enhance
 # without even the implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 #
 
+# there should be a way to add a base model when training, and base model should be there in the config too
+# when model is trained with a base model, system should use the base model with appended other model
+# to do it's tasks, also when training, it should open the base model itself.
+# when training base model will not be trained, only the resulting model will be trained out of the
+# generator
+
+# there should be a way to save discriminator with the generator, so that the discriminator doesn't
+# have to train again and again.
+
 __version__ = '0.3'
 
 import io
@@ -137,11 +146,11 @@ print("""{}   {}Super Resolution for images and videos powered by Deep Learning!
 
 # Load the underlying deep learning libraries based on the device specified.  If you specify THEANO_FLAGS manually,
 # the code assumes you know what you are doing and they are not overriden!
-os.environ.setdefault('THEANO_FLAGS', 'blas.ldflags=-lopenblas -L/home/rolustech/lib -lgfortran,floatX=float32,device={},force_device=True,allow_gc=True,print_active_device=False,int_division=floatX'.format(args.device))
+#os.environ.setdefault('THEANO_FLAGS', 'blas.ldflags=-lopenblas -L/home/rolustech/lib -lgfortran,floatX=float32,device={},force_device=True,allow_gc=True,print_active_device=False,int_division=floatX'.format(args.device))
+os.environ.setdefault('THEANO_FLAGS', 'floatX=float32,device={},force_device=True,allow_gc=True,print_active_device=False,int_division=floatX'.format(args.device))
 
 # Numeric Computing (GPU)
 import theano, theano.tensor as T
-from theano.compile.nanguardmode import NanGuardMode
 T.nnet.softminus = lambda x: x - T.nnet.softplus(x)
 
 # Support ansi colors in Windows too.
@@ -433,6 +442,12 @@ class Model(object):
             name = list(self.network.keys())[list(self.network.values()).index(l)]
             yield (name, l)
 
+    def list_discriminator_layers(self):
+        for l in lasagne.layers.get_all_layers( self.network['disc'], treat_as_input=[self.network['disc1.1']]):
+            if not l.get_params(): continue
+            name = list(self.network.keys())[list(self.network.values()).index(l)]
+            yield (name, l)
+
     def get_filename(self, absolute=False):
         filename = 'ne%ix-%s-%s-%s.pkl.bz2' % (args.zoom, args.type, args.model, __version__)
         return os.path.join(os.path.dirname(__file__), filename) if absolute else filename
@@ -445,6 +460,9 @@ class Model(object):
         
         pickle.dump((config, params), bz2.open(self.get_filename(absolute=True), 'wb'))
         print('  - Saved model as `{}` after training.'.format(self.get_filename()))
+
+    def save_discriminator(self):
+        filename = 'ne%ix-%s-%s-%s.pkl.bz2'
 
     def load_model(self):
         if not os.path.exists(self.get_filename(absolute=True)):
