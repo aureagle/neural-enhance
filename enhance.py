@@ -137,11 +137,11 @@ print("""{}   {}Super Resolution for images and videos powered by Deep Learning!
 
 # Load the underlying deep learning libraries based on the device specified.  If you specify THEANO_FLAGS manually,
 # the code assumes you know what you are doing and they are not overriden!
-os.environ.setdefault('THEANO_FLAGS', 'blas.ldflags=-lopenblas -L/home/rolustech/lib -lgfortran,floatX=float32,device={},force_device=True,allow_gc=True,print_active_device=False,int_division=floatX'.format(args.device))
+#os.environ.setdefault('THEANO_FLAGS', 'blas.ldflags=-lopenblas -L/home/rolustech/lib -lgfortran,floatX=float32,device={},force_device=True,allow_gc=True,print_active_device=False,int_division=floatX'.format(args.device))
+os.environ.setdefault('THEANO_FLAGS', 'floatX=float32,device={},force_device=True,allow_gc=True,print_active_device=False,int_division=floatX'.format(args.device))
 
 # Numeric Computing (GPU)
 import theano, theano.tensor as T
-from theano.compile.nanguardmode import NanGuardMode
 T.nnet.softminus = lambda x: x - T.nnet.softplus(x)
 
 # Support ansi colors in Windows too.
@@ -171,6 +171,7 @@ class DataLoader(threading.Thread):
         self.orig_buffer = np.zeros((args.buffer_size, 3, self.orig_shape, self.orig_shape), dtype=np.float32)
         self.seed_buffer = np.zeros((args.buffer_size, 3, self.seed_shape, self.seed_shape), dtype=np.float32)
         self.files = glob.glob(args.train)
+        self.spanned_files = []
         if len(self.files) == 0:
             error("There were no files found to train from searching for `{}`".format(args.train),
                   "  - Try putting all your images in one folder and using `--train=data/*.jpg`")
@@ -186,6 +187,12 @@ class DataLoader(threading.Thread):
             random.shuffle(self.files)
             for f in self.files:
                 self.add_to_buffer(f)
+                if( f in self.files ):
+                    self.files.remove(f)
+                    self.spanned_files.append(f)
+                    if len( self.files ) <= 0:
+                        self.files = self.spanned_files
+                        self.spanned_files = []
 
     def add_to_buffer(self, f):
         filename = os.path.join(self.cwd, f)
@@ -316,7 +323,7 @@ class Model(object):
         self.network['img'] = InputLayer((None, 3, None, None))
         self.network['seed'] = InputLayer((None, 3, None, None))
 
-        config, params = self.load_model()
+        config, params, discriminator = self.load_model()
         self.setup_generator(self.last_layer(), config)
 
         if args.train:
@@ -324,6 +331,7 @@ class Model(object):
             self.setup_perceptual(concatenated)
             self.load_perceptual()
             self.setup_discriminator()
+            self.load_discriminator(discriminator)
         self.load_generator(params)
         self.compile()
 
@@ -368,6 +376,17 @@ class Model(object):
 
         self.network['out'] = ConvLayer(self.last_layer(), 3, filter_size=(7,7), pad=(3,3), nonlinearity=None)
 
+    def setup_gan(self, input, config ):
+        for k, v in config.items(): setattr( args, k, v )
+        self.make_layer('iter.0', input, 32, filter_size=(32,32), pad=(0,0))
+        self.make_layer('iter.1', self.last_layer(), 64, filter_size=(16,16), pad=(0,0))
+        self.make_layer('iter.2', self.last_layer(), 128, filter_size=(8,8), pad=(0,0))
+        self.make_layer('iter.3', self.last_layer(), 128, filter_size=(16,16), pad=(0,0))
+        self.make_layer('iter.3', self.last_layer(), 64, filter_size=(32,32), pad=(0,0))
+        self.network['out'] = ConvLayer( self.last_layer(), 3, filter_size=(7,7), pad=(3,3), nonlinearity=None )
+
+
+
     def setup_perceptual(self, input):
         """Use lasagne to create a network of convolution layers using pre-trained VGG19 weights.
         """
@@ -397,7 +416,7 @@ class Model(object):
         self.network['conv5_4'] = ConvLayer(self.network['conv5_3'], 512, 3, pad=1)
         # self.network['pool5']   = PoolLayer(self.network('conv5_4'), 2, mode='max')
 
-    def setup_discriminator(self):
+    def setup_disc(self):
         c = args.discriminator_size
         self.make_layer('disc1.1', batch_norm(self.network['conv1_2']), 1*c, filter_size=(5,5), stride=(2,2), pad=(2,2))
         self.make_layer('disc1.2', self.last_layer(), 1*c, filter_size=(5,5), stride=(2,2), pad=(2,2))
@@ -409,6 +428,23 @@ class Model(object):
         self.make_layer('disc6', self.last_layer(), 2*c, filter_size=(1,1), stride=(1,1), pad=(0,0))
         self.network['disc'] = batch_norm(ConvLayer(self.last_layer(), 1, filter_size=(1,1),
                                                     nonlinearity=lasagne.nonlinearities.linear))
+    def setup_discriminator(self):
+        c = args.discriminator_size
+        # offset = np.array([103.939, 116.779, 123.680], dtype=np.float32).reshape((1,3,1,1))
+        # self.network['disc_input'] = lasagne.layers.ConcatLayer([self.network['img'], self.network['out']], axis=0)
+        # self.network['disc.-1'] = lasagne.layers.NonlinearityLayer(self.network['disc_input'], lambda x: ((x+0.5)*255.0) - offset)
+        self.network['dse'] = self.network['percept']
+        self.make_layer('disc.0', self.network['dse'], c, pad=1 )
+        # self.network['dse'] = self.network['percept']
+        # self.make_layer('disc.0', self.network['dse'], 32, pad=1 )
+
+        # self.network['disc.0bn'] = batch_norm( self.last_layer()) 
+        self.make_layer('disc.1', self.last_layer(), 2*c, filter_size=(5,5))
+        self.make_layer('disc.2', self.last_layer(), c, filter_size=(5,5))
+
+        self.network['disc.2a'] = ConvLayer( self.last_layer(), 1, filter_size=(1,1), nonlinearity=lasagne.nonlinearities.linear )
+        self.network['disc'] = self.network['disc.2a']
+        # self.network['disc'] = batch_norm( self.network['disc'] )
 
 
     #------------------------------------------------------------------------------------------------------------------
@@ -433,6 +469,12 @@ class Model(object):
             name = list(self.network.keys())[list(self.network.values()).index(l)]
             yield (name, l)
 
+    def list_discriminator_layers(self):
+        for l in lasagne.layers.get_all_layers( self.network['disc'], treat_as_input=[self.network['dse']]):
+            if not l.get_params(): continue
+            name = list(self.network.keys())[list(self.network.values()).index(l)]
+            yield (name, l)
+
     def get_filename(self, absolute=False):
         filename = 'ne%ix-%s-%s-%s.pkl.bz2' % (args.zoom, args.type, args.model, __version__)
         return os.path.join(os.path.dirname(__file__), filename) if absolute else filename
@@ -440,23 +482,37 @@ class Model(object):
     def save_generator(self):
         def cast(p): return p.get_value().astype(np.float32)
         params = {k: [cast(p) for p in l.get_params()] for (k, l) in self.list_generator_layers()}
+        discriminator = {k: [cast(p) for p in l.get_params()] for (k, l) in self.list_discriminator_layers()}
         config = {k: getattr(args, k) for k in ['generator_blocks', 'generator_residual', 'generator_filters'] + \
-                                               ['generator_upscale', 'generator_downscale']}
+                                               ['generator_upscale', 'generator_downscale', 'discriminator_size' ]}
         
-        pickle.dump((config, params), bz2.open(self.get_filename(absolute=True), 'wb'))
+        pickle.dump((config, params, discriminator ), bz2.open(self.get_filename(absolute=True), 'wb'))
         print('  - Saved model as `{}` after training.'.format(self.get_filename()))
 
     def load_model(self):
         if not os.path.exists(self.get_filename(absolute=True)):
-            if args.train: return {}, {}
+            if args.train: return {}, {}, {}
             error("Model file with pre-trained convolution layers not found. Download it here...",
                   "https://github.com/alexjc/neural-enhance/releases/download/v%s/%s"%(__version__, self.get_filename()))
         print('  - Loaded file `{}` with trained model.'.format(self.get_filename()))
-        return pickle.load(bz2.open(self.get_filename(absolute=True), 'rb'))
+        rslt = pickle.load(bz2.open(self.get_filename(absolute=True), 'rb'))
+        if len( rslt ) < 3:
+            return rslt[0], rslt[1], {}
+        else:
+            return rslt
 
     def load_generator(self, params):
         if len(params) == 0: return
         for k, l in self.list_generator_layers():
+            assert k in params, "Couldn't find layer `%s` in loaded model.'" % k
+            assert len(l.get_params()) == len(params[k]), "Mismatch in types of layers."
+            for p, v in zip(l.get_params(), params[k]):
+                assert v.shape == p.get_value().shape, "Mismatch in number of parameters for layer {}.".format(k)
+                p.set_value(v.astype(np.float32))
+
+    def load_discriminator(self, params):
+        if len(params) == 0: return
+        for k, l in self.list_discriminator_layers():
             assert k in params, "Couldn't find layer `%s` in loaded model.'" % k
             assert len(l.get_params()) == len(params[k]), "Mismatch in types of layers."
             for p, v in zip(l.get_params(), params[k]):
