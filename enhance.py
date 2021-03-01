@@ -102,6 +102,7 @@ add_arg('--min-contentfulness',     default=0, type=np.int32,           help='mi
 add_arg('--max-contentfulness', default=0, type=np.int32,               help='max contentfulness of the tiles to be trained on' )
 add_arg('--train-palette',      default=0, type=np.int32,            help='train with 256 color source image' )
 add_arg('--train-resolution',   default=0, type=np.int32,               help='train by downscaling all images to specific resolution' )
+add_arg('--remove-processed-image',  default=True, type=str2bool,        help='remove images from current list after processed in training, they are re-added when the queue is complete' )
 args = parser.parse_args()
 
 
@@ -187,7 +188,7 @@ class DataLoader(threading.Thread):
             random.shuffle(self.files)
             for f in self.files:
                 self.add_to_buffer(f)
-                if( f in self.files ):
+                if f in self.files and args.remove_processed_image == True:
                     self.files.remove(f)
                     self.spanned_files.append(f)
                     if len( self.files ) <= 0:
